@@ -3,15 +3,18 @@ import {
   ArrowLeft,
   ArrowRight,
   BadgeCheck,
+  Boxes,
   CircleAlert,
   Clock3,
   FileCheck2,
   LoaderCircle,
   RefreshCw,
+  RotateCcw,
   ShieldAlert,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import './OrderDesk.css'
+import { InventoryManager } from './InventoryManager'
 import { useAuth } from './context/useAuth'
 import { apiFetch, apiFetchBlob } from './lib/api'
 import { reportNetworkFailure } from './networkStatus'
@@ -32,13 +35,16 @@ export type OrderLine = {
   free_value: string
   total: string
   scheme_label: string | null
+  available_stock?: number
+  is_low_stock?: boolean
 }
 
 export type DemoOrder = {
-  source: 'demo_memory'
+  source: 'demo_memory' | 'database'
   id: string
   order_number: string
   retailer_name: string
+  retailer_id?: string
   status: OrderStatus
   created_at: string
   updated_at: string
@@ -48,6 +54,10 @@ export type DemoOrder = {
   free_value: string
   total: string
   note: string | null
+  hold_reason?: string | null
+  retailer_credit_limit?: string | null
+  retailer_current_outstanding?: string | null
+  retailer_available_credit?: string | null
   lines: OrderLine[]
 }
 
@@ -58,6 +68,7 @@ type OrderListResponse = {
 
 type Props = {
   onOpenOrder: (orderId: string) => void
+  onRepeatOrder?: (draftResponse: any) => void
 }
 
 const currency = new Intl.NumberFormat('en-IN', {
@@ -91,14 +102,31 @@ function formatDate(value: string) {
   }).format(new Date(value))
 }
 
-export function OrderDesk({ onOpenOrder }: Props) {
+export function OrderDesk({ onOpenOrder, onRepeatOrder }: Props) {
   const { role } = useAuth()
   const isOrderDesk = role === 'order_desk'
+  const [deskTab, setDeskTab] = useState<'orders' | 'inventory'>('orders')
   const [orders, setOrders] = useState<DemoOrder[]>([])
   const [activeFilter, setActiveFilter] = useState<OrderStatus | 'all'>('all')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [reorderingId, setReorderingId] = useState<string | null>(null)
+
+  const handleRepeatOrder = async (orderId: string) => {
+    if (!onRepeatOrder) return
+    setReorderingId(orderId)
+    try {
+      const res = await apiFetch(`/orders/${orderId}/repeat-draft`, {
+        method: 'POST',
+      })
+      onRepeatOrder(res)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not prepare repeat order draft.')
+    } finally {
+      setReorderingId(null)
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -134,96 +162,139 @@ export function OrderDesk({ onOpenOrder }: Props) {
       <div className="orders-breadcrumb">
         <span>{isOrderDesk ? 'Distributor' : 'Retailer'}</span>
         <span>/</span>
-        <b>{isOrderDesk ? 'Order desk' : 'My orders'}</b>
-      </div>
-      <div className="orders-heading">
-        <div>
-          <p className="orders-overline">{isOrderDesk ? 'DISTRIBUTOR WORKSPACE' : 'RETAILER ORDERS'}</p>
-          <h1>{isOrderDesk ? 'Order desk' : 'My orders'}</h1>
-          <p>{isOrderDesk ? 'Review submitted orders before approval.' : 'Track your submitted orders and status.'}</p>
-        </div>
-        <button className="orders-refresh" type="button" onClick={() => setReloadKey((key) => key + 1)} aria-label="Refresh orders">
-          <RefreshCw size={17} aria-hidden="true" />
-        </button>
+        <b>{isOrderDesk ? (deskTab === 'inventory' ? 'Live inventory' : 'Order desk') : 'My orders'}</b>
       </div>
 
-
-
-      <div className="orders-summary-strip">
-        <div><span className="summary-icon review-icon"><Clock3 size={16} aria-hidden="true" /></span><span>Needs review</span><strong>{needsReview}</strong></div>
-        <div><span className="summary-icon hold-icon"><ShieldAlert size={16} aria-hidden="true" /></span><span>On hold</span><strong>{onHold}</strong></div>
-        <div><span className="summary-icon all-icon"><FileCheck2 size={16} aria-hidden="true" /></span><span>Total orders</span><strong>{orders.length}</strong></div>
-      </div>
-
-      <div className="orders-toolbar">
-        <div className="order-filters" role="group" aria-label="Filter orders by status">
-          {filters.map((filter) => (
-            <button
-              key={filter.value}
-              type="button"
-              className={activeFilter === filter.value ? 'order-filter active' : 'order-filter'}
-              aria-pressed={activeFilter === filter.value}
-              onClick={() => setActiveFilter(filter.value)}
-            >
-              {filter.label}
-              {filter.value === 'pending_review' && needsReview > 0 && <span>{needsReview}</span>}
-              {filter.value === 'credit_hold' && onHold > 0 && <span>{onHold}</span>}
-            </button>
-          ))}
-        </div>
-        <span className="orders-count">{visibleOrders.length} shown</span>
-      </div>
-
-      {error && (
-        <div className="orders-state" role="alert">
-          <CircleAlert size={20} aria-hidden="true" />
-          <h2>Order desk unavailable</h2>
-          <p>The order service could not be reached.</p>
-          <button type="button" onClick={() => setReloadKey((key) => key + 1)}>Retry</button>
+      {isOrderDesk && (
+        <div className="desk-tabs-bar" role="tablist" aria-label="Distributor workspace sections">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={deskTab === 'orders'}
+            className={deskTab === 'orders' ? 'desk-tab-btn active' : 'desk-tab-btn'}
+            onClick={() => setDeskTab('orders')}
+          >
+            <FileCheck2 size={15} aria-hidden="true" />
+            <span>Orders ({orders.length})</span>
+            {needsReview > 0 && <span className="desk-tab-badge">{needsReview}</span>}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={deskTab === 'inventory'}
+            className={deskTab === 'inventory' ? 'desk-tab-btn active' : 'desk-tab-btn'}
+            onClick={() => setDeskTab('inventory')}
+          >
+            <Boxes size={15} aria-hidden="true" />
+            <span>Live Inventory & Stock</span>
+          </button>
         </div>
       )}
 
-      {loading && !error && (
-        <div className="orders-state" role="status">
-          <LoaderCircle className="spin" size={21} aria-hidden="true" />
-          <p>Loading orders</p>
-        </div>
-      )}
-
-      {!loading && !error && visibleOrders.length === 0 && (
-        <div className="orders-state">
-          <div className="orders-empty-icon"><FileCheck2 size={21} aria-hidden="true" /></div>
-          <h2>{orders.length === 0 ? 'No orders to review' : 'No orders in this view'}</h2>
-          <p>{orders.length === 0 ? 'Orders submitted from the retailer cart will appear here.' : 'Choose another status filter.'}</p>
-          {orders.length > 0 && <button type="button" onClick={() => setActiveFilter('all')}>Show all orders</button>}
-        </div>
-      )}
-
-      {!loading && !error && visibleOrders.length > 0 && (
-        <div className="orders-table" role="table" aria-label="Orders">
-          <div className="orders-table-head" role="row">
-            <span role="columnheader">Order</span>
-            <span role="columnheader">Retailer</span>
-            <span role="columnheader">Submitted</span>
-            <span role="columnheader">Status</span>
-            <span role="columnheader">Total</span>
-            <span role="columnheader" className="orders-table-action-head"> </span>
-          </div>
-          {visibleOrders.map((order) => (
-            <div className="orders-table-row" role="row" key={order.id}>
-              <span className="order-number-cell" role="cell">{order.order_number}<small>{order.lines.length} lines</small></span>
-              <span className="order-retailer-cell" role="cell">{order.retailer_name}</span>
-              <span className="order-date-cell" role="cell">{formatDate(order.created_at)}</span>
-              <span role="cell"><span className={`order-status status-${order.status}`}>{statusNames[order.status]}</span></span>
-              <strong className="order-total-cell" role="cell">{currency.format(Number(order.total))}</strong>
-              <span role="cell" className="order-open-cell">
-                <button type="button" onClick={() => onOpenOrder(order.id)} aria-label={`Review ${order.order_number}`}>
-                  Review <ArrowRight size={14} aria-hidden="true" />
-                </button>
-              </span>
+      {deskTab === 'inventory' && isOrderDesk ? (
+        <InventoryManager />
+      ) : (
+        <>
+          <div className="orders-heading">
+            <div>
+              <p className="orders-overline">{isOrderDesk ? 'DISTRIBUTOR WORKSPACE' : 'RETAILER ORDERS'}</p>
+              <h1>{isOrderDesk ? 'Order desk' : 'My orders'}</h1>
+              <p>{isOrderDesk ? 'Review submitted orders before approval.' : 'Track your submitted orders and status.'}</p>
             </div>
-          ))}
-        </div>
+            <button className="orders-refresh" type="button" onClick={() => setReloadKey((key) => key + 1)} aria-label="Refresh orders">
+              <RefreshCw size={17} aria-hidden="true" />
+            </button>
+          </div>
+
+          <div className="orders-summary-strip">
+            <div><span className="summary-icon review-icon"><Clock3 size={16} aria-hidden="true" /></span><span>Needs review</span><strong>{needsReview}</strong></div>
+            <div><span className="summary-icon hold-icon"><ShieldAlert size={16} aria-hidden="true" /></span><span>On hold</span><strong>{onHold}</strong></div>
+            <div><span className="summary-icon all-icon"><FileCheck2 size={16} aria-hidden="true" /></span><span>Total orders</span><strong>{orders.length}</strong></div>
+          </div>
+
+          <div className="orders-toolbar">
+            <div className="order-filters" role="group" aria-label="Filter orders by status">
+              {filters.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  className={activeFilter === filter.value ? 'order-filter active' : 'order-filter'}
+                  aria-pressed={activeFilter === filter.value}
+                  onClick={() => setActiveFilter(filter.value)}
+                >
+                  {filter.label}
+                  {filter.value === 'pending_review' && needsReview > 0 && <span>{needsReview}</span>}
+                  {filter.value === 'credit_hold' && onHold > 0 && <span>{onHold}</span>}
+                </button>
+              ))}
+            </div>
+            <span className="orders-count">{visibleOrders.length} shown</span>
+          </div>
+
+          {error && (
+            <div className="orders-state" role="alert">
+              <CircleAlert size={20} aria-hidden="true" />
+              <h2>Order desk unavailable</h2>
+              <p>The order service could not be reached.</p>
+              <button type="button" onClick={() => setReloadKey((key) => key + 1)}>Retry</button>
+            </div>
+          )}
+
+          {loading && !error && (
+            <div className="orders-state" role="status">
+              <LoaderCircle className="spin" size={21} aria-hidden="true" />
+              <p>Loading orders</p>
+            </div>
+          )}
+
+          {!loading && !error && visibleOrders.length === 0 && (
+            <div className="orders-state">
+              <div className="orders-empty-icon"><FileCheck2 size={21} aria-hidden="true" /></div>
+              <h2>{orders.length === 0 ? 'No orders to review' : 'No orders in this view'}</h2>
+              <p>{orders.length === 0 ? 'Orders submitted from the retailer cart will appear here.' : 'Choose another status filter.'}</p>
+              {orders.length > 0 && <button type="button" onClick={() => setActiveFilter('all')}>Show all orders</button>}
+            </div>
+          )}
+
+          {!loading && !error && visibleOrders.length > 0 && (
+            <div className="orders-table" role="table" aria-label="Orders">
+              <div className="orders-table-head" role="row">
+                <span role="columnheader">Order</span>
+                <span role="columnheader">Retailer</span>
+                <span role="columnheader">Submitted</span>
+                <span role="columnheader">Status</span>
+                <span role="columnheader">Total</span>
+                <span role="columnheader" className="orders-table-action-head"> </span>
+              </div>
+              {visibleOrders.map((order) => (
+                <div className="orders-table-row" role="row" key={order.id}>
+                  <span className="order-number-cell" role="cell">{order.order_number}<small>{order.lines.length} lines</small></span>
+                  <span className="order-retailer-cell" role="cell">{order.retailer_name}</span>
+                  <span className="order-date-cell" role="cell">{formatDate(order.created_at)}</span>
+                  <span role="cell"><span className={`order-status status-${order.status}`}>{statusNames[order.status]}</span></span>
+                  <strong className="order-total-cell" role="cell">{currency.format(Number(order.total))}</strong>
+                  <span role="cell" className="order-open-cell" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    {!isOrderDesk && onRepeatOrder && (
+                      <button
+                        type="button"
+                        className="repeat-order-button"
+                        onClick={() => void handleRepeatOrder(order.id)}
+                        disabled={reorderingId === order.id}
+                        title="Repeat this order with current pricing and schemes"
+                      >
+                        <RotateCcw size={13} className={reorderingId === order.id ? 'spin' : ''} />
+                        {reorderingId === order.id ? 'Loading…' : 'Repeat'}
+                      </button>
+                    )}
+                    <button type="button" onClick={() => onOpenOrder(order.id)} aria-label={`Review ${order.order_number}`}>
+                      Review <ArrowRight size={14} aria-hidden="true" />
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </section>
   )
@@ -232,17 +303,34 @@ export function OrderDesk({ onOpenOrder }: Props) {
 type DetailProps = {
   orderId: string
   onBack: () => void
+  onRepeatOrder?: (draftResponse: any) => void
 }
 
-export function OrderDetail({ orderId, onBack }: DetailProps) {
+export function OrderDetail({ orderId, onBack, onRepeatOrder }: DetailProps) {
   const { role } = useAuth()
   const isOrderDesk = role === 'order_desk'
   const [order, setOrder] = useState<DemoOrder | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [downloadingCsv, setDownloadingCsv] = useState(false)
+  const [repeating, setRepeating] = useState(false)
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
+
+  const handleRepeatOrder = async () => {
+    if (!order || !onRepeatOrder) return
+    setRepeating(true)
+    try {
+      const res = await apiFetch(`/orders/${order.id}/repeat-draft`, {
+        method: 'POST',
+      })
+      onRepeatOrder(res)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not prepare repeat order draft.')
+    } finally {
+      setRepeating(false)
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -336,25 +424,94 @@ export function OrderDetail({ orderId, onBack }: DetailProps) {
         <div className="orders-preview-note"><span /> Demo record. It will be lost when the API restarts.</div>
       )}
 
+      {order.status === 'credit_hold' && (
+        <div className="credit-hold-banner" role="alert">
+          <ShieldAlert size={20} aria-hidden="true" />
+          <div>
+            <strong>Order on Credit Hold</strong>
+            <p>{order.hold_reason ?? 'This order exceeds the retailer available credit limit.'}</p>
+          </div>
+        </div>
+      )}
+
       <div className="order-detail-layout">
         <div className="order-detail-lines">
           <div className="detail-lines-heading"><h2>Order lines</h2><span>{order.lines.length} items</span></div>
-          {order.lines.map((line) => (
-            <div className="detail-order-line" key={`${order.id}-${line.sku}`}>
-              <div className="detail-product-copy">
-                <strong>{line.name}</strong>
-                <span>{line.sku} · {line.order_unit}</span>
+          {order.lines.map((line) => {
+            const avail = line.available_stock
+            const isShort = avail !== undefined && avail < line.delivered_quantity
+            const isOut = avail !== undefined && avail <= 0
+            const isLow = avail !== undefined && !isOut && (line.is_low_stock || isShort)
+
+            return (
+              <div className="detail-order-line" key={`${order.id}-${line.sku}`}>
+                <div className="detail-product-copy">
+                  <strong>{line.name}</strong>
+                  <span>{line.sku} · {line.order_unit}</span>
+                  {avail !== undefined && (
+                    <span
+                      className={`line-stock-tag ${
+                        isOut ? 'out' : isShort ? 'short' : isLow ? 'low' : 'ok'
+                      }`}
+                      title={
+                        isShort
+                          ? `Delivered quantity (${line.delivered_quantity}) exceeds live available stock (${avail})`
+                          : `Live available stock: ${avail} ${line.order_unit}s`
+                      }
+                    >
+                      {isOut
+                        ? '• Out of stock'
+                        : isShort
+                        ? `• Short stock (${avail} avail / ${line.delivered_quantity} needed)`
+                        : isLow
+                        ? `• Low stock (${avail} avail)`
+                        : `• ${avail} cases available`}
+                    </span>
+                  )}
+                </div>
+                <div className="detail-line-quantity"><strong>{line.paid_quantity}</strong><span>paid</span></div>
+                <div className="detail-line-quantity"><strong>{line.free_quantity}</strong><span>free</span></div>
+                <div className="detail-line-total"><strong>{currency.format(Number(line.total))}</strong><span>{line.scheme_label ?? 'No scheme'}</span></div>
               </div>
-              <div className="detail-line-quantity"><strong>{line.paid_quantity}</strong><span>paid</span></div>
-              <div className="detail-line-quantity"><strong>{line.free_quantity}</strong><span>free</span></div>
-              <div className="detail-line-total"><strong>{currency.format(Number(line.total))}</strong><span>{line.scheme_label ?? 'No scheme'}</span></div>
-            </div>
-          ))}
+            )
+          })}
 
           {order.note && <div className="order-desk-note"><strong>Desk note</strong><p>{order.note}</p></div>}
         </div>
 
         <aside className="order-review-panel">
+          {order.retailer_credit_limit !== undefined && order.retailer_credit_limit !== null && (
+            <div className="retailer-credit-card">
+              <div className="credit-card-header">
+                <strong>Retailer Credit Overview</strong>
+              </div>
+              <div className="credit-stat-row">
+                <span>Credit limit</span>
+                <strong>{currency.format(Number(order.retailer_credit_limit))}</strong>
+              </div>
+              <div className="credit-stat-row">
+                <span>Current outstanding</span>
+                <strong>{currency.format(Number(order.retailer_current_outstanding ?? 0))}</strong>
+              </div>
+              <div className="credit-stat-row credit-available">
+                <span>Available credit</span>
+                <strong
+                  className={
+                    Number(order.retailer_available_credit ?? 0) < Number(order.total)
+                      ? 'credit-insufficient'
+                      : ''
+                  }
+                >
+                  {currency.format(Number(order.retailer_available_credit ?? 0))}
+                </strong>
+              </div>
+              <div className="credit-stat-row order-amount-row">
+                <span>Order payable</span>
+                <strong>{currency.format(Number(order.total))}</strong>
+              </div>
+            </div>
+          )}
+
           <p className="orders-overline">ORDER SUMMARY</p>
           <div className="detail-total-row"><span>Subtotal</span><strong>{currency.format(Number(order.subtotal))}</strong></div>
           {Number(order.discount_total) > 0 && (
@@ -428,6 +585,18 @@ export function OrderDetail({ orderId, onBack }: DetailProps) {
           {order.status === 'rejected' && (
             <div className="rejected-message"><CircleAlert size={16} aria-hidden="true" /> This order was rejected.</div>
           )}
+
+          {!isOrderDesk && onRepeatOrder && (
+            <button
+              type="button"
+              className="repeat-order-detail-button"
+              disabled={repeating}
+              onClick={() => void handleRepeatOrder()}
+            >
+              <RotateCcw size={15} className={repeating ? 'spin' : ''} />
+              {repeating ? 'Preparing reorder draft…' : 'Repeat this order'}
+            </button>
+          )}
         </aside>
       </div>
 
@@ -452,10 +621,31 @@ export function OrderConfirmation({ order, onOpenOrder, onOpenDesk, onNewOrder }
   return (
     <section className="order-confirmation-page">
       <div className="orders-breadcrumb"><span>Retailer</span><span>/</span><b>Order submitted</b></div>
-      <div className="confirmation-mark"><BadgeCheck size={28} aria-hidden="true" /></div>
-      <p className="orders-overline">SUBMITTED FOR REVIEW</p>
-      <h1>Order sent to the desk</h1>
-      <p className="confirmation-copy">Your order has been received. It has not been approved or placed with the distributor yet.</p>
+      {order.status === 'credit_hold' ? (
+        <>
+          <div className="confirmation-mark credit-hold-mark">
+            <ShieldAlert size={28} aria-hidden="true" />
+          </div>
+          <p className="orders-overline" style={{ color: '#b45309' }}>CREDIT HOLD NOTICE</p>
+          <h1>Order Placed on Credit Hold</h1>
+          <p className="confirmation-copy">
+            Your order was received, but placed on <strong>Credit Hold</strong> because it exceeds your available credit limit. Your distributor Order Desk will review it.
+          </p>
+          {order.hold_reason && (
+            <div className="confirmation-hold-reason">
+              <CircleAlert size={16} aria-hidden="true" />
+              <span>{order.hold_reason}</span>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="confirmation-mark"><BadgeCheck size={28} aria-hidden="true" /></div>
+          <p className="orders-overline">SUBMITTED FOR REVIEW</p>
+          <h1>Order sent to the desk</h1>
+          <p className="confirmation-copy">Your order has been received. It has not been approved or placed with the distributor yet.</p>
+        </>
+      )}
 
       <div className="confirmation-summary">
         <div><span>Order number</span><strong>{order.order_number}</strong></div>

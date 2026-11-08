@@ -11,7 +11,11 @@ import {
 import { useAuth } from '../context/useAuth'
 import './LoginPage.css'
 
-export function LoginPage() {
+type Props = {
+  onNavigateToRegister?: () => void
+}
+
+export function LoginPage({ onNavigateToRegister }: Props) {
   const { login, isConfigured } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -140,6 +144,20 @@ export function LoginPage() {
               <span>Sign In</span>
             )}
           </button>
+
+          {onNavigateToRegister && (
+            <div className="login-switch-view">
+              <span>Don't have an account?</span>{' '}
+              <button
+                type="button"
+                className="link-button"
+                onClick={onNavigateToRegister}
+                disabled={loading}
+              >
+                Register as Retailer
+              </button>
+            </div>
+          )}
         </form>
 
         <footer className="login-footer">

@@ -2,7 +2,7 @@ from decimal import Decimal
 from dotenv import load_dotenv
 load_dotenv()
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.database import get_engine
@@ -471,9 +471,18 @@ PRODUCTS = [
         "description": "Daawat Rozana Gold aromatic aged long grain basmati rice 5 kg",
         "pack_label": "5 kg",
         "price": Decimal("3100.00"),
-        "scheme_name": None,
-        "scheme_type": None,
-        "scheme_definition": None,
+        "scheme_name": "Tiered Volume Discount - Daawat Rice",
+        "scheme_type": "slab_discount",
+        "scheme_definition": {
+            "sku": "SKU-FE-DHWAT",
+            "tiers": [
+                {"min_quantity": 5, "max_quantity": 9, "discount_percent": 3},
+                {"min_quantity": 10, "max_quantity": 24, "discount_percent": 5},
+                {"min_quantity": 25, "max_quantity": None, "discount_percent": 8},
+            ],
+            "priority": 0,
+            "is_stackable": False,
+        },
     },
     {
         "sku": "SKU-FE-EVERM",
@@ -566,6 +575,11 @@ def seed():
     engine = get_engine()
 
     Base.metadata.create_all(engine)
+
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE retailers ADD COLUMN IF NOT EXISTS contact_person VARCHAR(200);"))
+        conn.execute(text("ALTER TABLE retailers ADD COLUMN IF NOT EXISTS address VARCHAR(500);"))
+        conn.commit()
 
     with Session(engine) as session:
         retailer = session.execute(

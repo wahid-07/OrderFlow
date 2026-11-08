@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import get_db_session
 from app.auth import get_current_user
 from app.main import app
-from app.models import Base, Product, Retailer, RetailerPrice, Scheme, User
+from app.models import Base, Inventory, Product, Retailer, RetailerPrice, Scheme, User
 
 
 @pytest.fixture
@@ -27,6 +27,8 @@ def seeded_database() -> Iterator[Engine]:
             name="Demo Retailer",
             external_ref="DEMO-RETAILER",
             is_active=True,
+            credit_limit=Decimal("100000.00"),
+            current_outstanding=Decimal("0.00"),
         )
         session.add(retailer)
         session.flush()
@@ -39,7 +41,7 @@ def seeded_database() -> Iterator[Engine]:
         )
 
         session.add(demo_user)
-        session.flush()
+        session.flush() 
 
         order_desk_user = User(
             auth_subject="demo-order-desk-user",
@@ -55,6 +57,8 @@ def seeded_database() -> Iterator[Engine]:
             name="Second Demo Retailer",
             external_ref="DEMO-RETAILER-2",
             is_active=True,
+            credit_limit=Decimal("50000.00"),
+            current_outstanding=Decimal("0.00"),
         )
 
         session.add(second_retailer)
@@ -94,6 +98,29 @@ def seeded_database() -> Iterator[Engine]:
             ),
         ]
         session.add_all(products)
+        session.flush()
+
+        inventories = [
+            Inventory(
+                product_id=products[0].id,
+                on_hand_stock=500,
+                reserved_stock=0,
+                low_stock_threshold=20,
+            ),
+            Inventory(
+                product_id=products[1].id,
+                on_hand_stock=200,
+                reserved_stock=0,
+                low_stock_threshold=20,
+            ),
+            Inventory(
+                product_id=products[2].id,
+                on_hand_stock=100,
+                reserved_stock=0,
+                low_stock_threshold=10,
+            ),
+        ]
+        session.add_all(inventories)
         session.flush()
         session.add_all(
             [

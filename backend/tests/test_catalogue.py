@@ -378,3 +378,62 @@ def test_catalogue_rejects_user_without_retailer_link() -> None:
         engine.dispose()
 
     assert response.status_code == 403
+
+
+def test_slab_discount_in_catalogue_and_cart_quote(
+    catalogue_client: tuple[TestClient, object],
+) -> None:
+    test_client, engine = catalogue_client
+    with Session(engine) as session:
+        session.add(
+            Scheme(
+                name="Tea Volume Slab",
+                scheme_type="slab_discount",
+                definition={
+                    "sku": "SKU-TL-250",
+                    "tiers": [
+                        {"min_quantity": 5, "max_quantity": 9, "discount_percent": 4},
+                        {"min_quantity": 10, "max_quantity": None, "discount_percent": 8},
+                    ],
+                },
+            )
+        )
+        session.commit()
+
+    # 1. Catalogue preview shows tiered scheme label
+    response = test_client.get("/catalogue")
+    assert response.status_code == 200
+    products = {item["sku"]: item for item in response.json()["items"]}
+    assert products["SKU-TL-250"]["scheme_label"] == "5+ cases → up to 8% off"
+
+    # 2. Cart quote below tier 1 (quantity 2): 0% discount
+    quote_small = test_client.post(
+        "/cart/quote",
+        json={"items": [{"sku": "SKU-TL-250", "quantity": 2}]},
+    )
+    assert quote_small.status_code == 200
+    line_small = quote_small.json()["lines"][0]
+    assert line_small["discount"] == "0.00"
+    assert line_small["total"] == "9440.00"
+
+    # 3. Cart quote in tier 1 (quantity 5 @ 4%): 5 * 4720 = 23,600; 4% = 944
+    quote_t1 = test_client.post(
+        "/cart/quote",
+        json={"items": [{"sku": "SKU-TL-250", "quantity": 5}]},
+    )
+    assert quote_t1.status_code == 200
+    line_t1 = quote_t1.json()["lines"][0]
+    assert line_t1["discount"] == "944.00"
+    assert line_t1["total"] == "22656.00"
+    assert line_t1["scheme_label"] == "5–9 cases → 4% off"
+
+    # 4. Cart quote in tier 2 (quantity 10 @ 8%): 10 * 4720 = 47,200; 8% = 3776
+    quote_t2 = test_client.post(
+        "/cart/quote",
+        json={"items": [{"sku": "SKU-TL-250", "quantity": 10}]},
+    )
+    assert quote_t2.status_code == 200
+    line_t2 = quote_t2.json()["lines"][0]
+    assert line_t2["discount"] == "3776.00"
+    assert line_t2["total"] == "43424.00"
+    assert line_t2["scheme_label"] == "10+ cases → 8% off"

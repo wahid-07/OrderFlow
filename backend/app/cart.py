@@ -15,9 +15,10 @@ from app.catalogue import (
     get_active_schemes,
     get_catalogue_retailer,
     resolve_scheme_for_sku,
+    resolve_schemes_for_sku,
 )
 from app.database import get_db_session
-from app.models import Product, RetailerPrice, User
+from app.models import Product, RetailerPrice, Salesman, SalesmanRetailerAssignment, User
 from app.scheme_engine import calculate_line
 
 router = APIRouter()
@@ -30,6 +31,9 @@ class CartItemRequest(BaseModel):
 
 class CartQuoteRequest(BaseModel):
     items: list[CartItemRequest] = Field(min_length=1)
+    retailer_id: UUID | None = Field(default=None, description="Target retailer ID for salesman/order desk orders")
+    idempotency_key: str | None = Field(default=None, max_length=100, description="Client idempotency key for offline sync")
+    order_source: str | None = Field(default=None, max_length=32, description="Source of order (retailer, salesman, offline_sync)")
 
 
 class CartQuoteLine(BaseModel):
@@ -45,7 +49,10 @@ class CartQuoteLine(BaseModel):
     discount: Decimal
     free_value: Decimal
     total: Decimal
-    scheme_label: str | None
+    scheme_label: str | None = None
+    discount_percent: Decimal = Decimal("0.00")
+    available_stock: int | None = None
+    is_low_stock: bool | None = None
 
 
 class CartQuoteResponse(BaseModel):
@@ -64,10 +71,45 @@ def quote_cart(
     session: Annotated[Session, Depends(get_db_session)],
     current_user: Annotated[
         User,
-        Depends(require_roles("retailer")),
+        Depends(require_roles("retailer", "salesman")),
     ],
 ) -> CartQuoteResponse:
-    if current_user.retailer_id is None:
+    target_retailer_id = current_user.retailer_id
+
+    if current_user.role == "salesman":
+        if not request.retailer_id:
+            raise HTTPException(
+                status_code=400,
+                detail="retailer_id is required when requesting a quote as salesman",
+            )
+        salesman = session.scalar(
+            select(Salesman).where(
+                Salesman.user_id == current_user.id,
+                Salesman.is_active.is_(True),
+            )
+        )
+        if salesman is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Active salesman profile not found",
+            )
+        assignment = session.scalar(
+            select(SalesmanRetailerAssignment).where(
+                SalesmanRetailerAssignment.salesman_id == salesman.id,
+                SalesmanRetailerAssignment.retailer_id == request.retailer_id,
+                SalesmanRetailerAssignment.is_active.is_(True),
+            )
+        )
+        if assignment is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Salesman is not assigned to this retailer",
+            )
+        target_retailer_id = request.retailer_id
+    elif current_user.role == "order_desk":
+        target_retailer_id = request.retailer_id or current_user.retailer_id
+
+    if target_retailer_id is None:
         raise HTTPException(
             status_code=403,
             detail="User is not linked to a retailer",
@@ -76,7 +118,7 @@ def quote_cart(
     return calculate_cart_quote(
         request,
         session,
-        current_user.retailer_id,
+        target_retailer_id,
     )
 
 
@@ -90,15 +132,20 @@ def calculate_cart_quote(
     schemes = get_active_schemes(session)
     lines: list[CartQuoteLine] = []
 
+    # Consolidate duplicate SKU lines so tier discounts and order totals reflect total ordered quantity
+    consolidated_items: dict[str, int] = {}
     for item in request.items:
+        consolidated_items[item.sku] = consolidated_items.get(item.sku, 0) + item.quantity
+
+    for sku, quantity in consolidated_items.items():
         product = session.scalar(
             select(Product).where(
-                Product.sku == item.sku,
+                Product.sku == sku,
                 Product.is_active.is_(True),
             )
         )
         if product is None:
-            raise HTTPException(status_code=404, detail=f"Unknown SKU: {item.sku}")
+            raise HTTPException(status_code=404, detail=f"Unknown SKU: {sku}")
 
         retailer_price = session.scalar(
             select(RetailerPrice)
@@ -116,16 +163,22 @@ def calculate_cart_quote(
         if retailer_price is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"No active price for SKU {item.sku} and this retailer",
+                detail=f"No active price for SKU {sku} and this retailer",
             )
 
         presentation = PRODUCT_PRESENTATION.get(product.sku, {})
-        scheme = resolve_scheme_for_sku(product.sku, schemes)
+        matching_schemes = resolve_schemes_for_sku(product.sku, schemes)
+        rules = [rule for _, rule in matching_schemes]
         calculation = calculate_line(
-            item.quantity,
+            quantity,
             retailer_price.unit_price,
-            scheme[1] if scheme else None,
+            rules if rules else None,
         )
+
+        scheme_label = calculation.scheme_label or (
+            matching_schemes[0][0] if matching_schemes else None
+        )
+
         lines.append(
             CartQuoteLine(
                 sku=product.sku,
@@ -140,7 +193,8 @@ def calculate_cart_quote(
                 discount=calculation.discount,
                 free_value=calculation.free_value,
                 total=calculation.total,
-                scheme_label=scheme[0] if scheme else None,
+                scheme_label=scheme_label,
+                discount_percent=calculation.discount_percent,
             )
         )
 

@@ -1,4 +1,5 @@
 import {
+    AlertTriangle,
     ArrowRight,
     ClipboardCheck,
     Cloud,
@@ -7,6 +8,7 @@ import {
     Minus,
     Plus,
     Search,
+    ShieldAlert,
     ShoppingBag,
     Sparkles,
     X,
@@ -18,6 +20,15 @@ import { useAuth } from './context/useAuth'
 import { apiFetch } from './lib/api'
 import { OFFLINE_EVENT, reportNetworkFailure } from './networkStatus'
 import { loadCartDraft, saveCartDraft } from './offlineCart'
+import {
+    saveCachedCatalogue,
+    getCachedCatalogue,
+    queueOutboxOrder,
+    getOutboxOrders,
+    markOrderUnderReview,
+    supersedeOutboxOrder,
+} from './lib/offlineStorage'
+import { OutboxDrawer } from './components/OutboxDrawer'
 import {
     OrderConfirmation,
     OrderDesk,
@@ -58,6 +69,7 @@ type QuoteLine = {
   free_value: string
   total: string
   scheme_label: string | null
+  discount_percent?: string
 }
 
 type CartQuote = {
@@ -73,6 +85,17 @@ type CartQuote = {
 type CaptureCartItem = {
   sku: string
   quantity: number
+}
+
+type RetailerCredit = {
+  retailer_id: string
+  retailer_name: string
+  credit_limit: string
+  current_outstanding: string
+  available_credit: string
+  pending_orders_total: string
+  effective_available_credit: string
+  credit_utilization_percent: string
 }
 
 const currency = new Intl.NumberFormat('en-IN', {
@@ -93,8 +116,16 @@ const ORDERED_CATEGORIES = [
   'Instant Foods',
 ] as const
 
-function CataloguePage() {
-  const { role, user, logout } = useAuth()
+interface CataloguePageProps {
+  salesmanRetailerContext?: {
+    id: string
+    name: string
+    external_ref: string
+  }
+}
+
+function CataloguePage({ salesmanRetailerContext }: CataloguePageProps = {}) {
+  const { role, user, profile, retailerId, logout } = useAuth()
   const isOrderDesk = role === 'order_desk'
 
   const [products, setProducts] = useState<CatalogueProduct[]>([])
@@ -120,15 +151,61 @@ function CataloguePage() {
   const [orderSubmitError, setOrderSubmitError] = useState('')
   const [cartReady, setCartReady] = useState(false)
   const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [retailerCredit, setRetailerCredit] = useState<RetailerCredit | null>(null)
+  const [cachedSyncedAt, setCachedSyncedAt] = useState<string | null>(null)
+  const [outboxOpen, setOutboxOpen] = useState(false)
+  const [pendingOutboxCount, setPendingOutboxCount] = useState(0)
+  const [recoveredFromKey, setRecoveredFromKey] = useState<string | null>(null)
+  const [reorderNotice, setReorderNotice] = useState<{
+    message: string
+    items: Array<{ sku: string; name: string; reason: string; message: string }>
+  } | null>(null)
+
+  useEffect(() => {
+    let active = true
+
+    const updateCount = async () => {
+      const orders = await getOutboxOrders(user?.id)
+      if (!active) return
+      const count = orders.filter(
+        (o) => o.status === 'waiting_connection' || o.status === 'needs_attention',
+      ).length
+      setPendingOutboxCount(count)
+    }
+
+    void updateCount()
+    const handleOutboxUpdate = () => void updateCount()
+    window.addEventListener('orderflow:outbox-updated', handleOutboxUpdate)
+    return () => {
+      active = false
+      window.removeEventListener('orderflow:outbox-updated', handleOutboxUpdate)
+    }
+  }, [user?.id])
+
+  useEffect(() => {
+    if (isOrderDesk) return
+    const endpoint = salesmanRetailerContext
+      ? `/retailer/credit?retailer_id=${salesmanRetailerContext.id}`
+      : '/retailer/credit'
+
+    apiFetch<RetailerCredit>(endpoint)
+      .then((data) => setRetailerCredit(data))
+      .catch(() => {
+        // Silently ignore if offline or unauthenticated
+      })
+  }, [isOrderDesk, reloadKey, salesmanRetailerContext])
 
   const currentView: 'catalogue' | 'ai_capture' | 'order_desk' | 'order_detail' | 'order_confirmation' =
     isOrderDesk && (activeView === 'catalogue' || activeView === 'ai_capture')
       ? 'order_desk'
       : activeView
 
+  const currentUserId = user?.id || 'anonymous'
+  const currentRetailerContextId = salesmanRetailerContext?.id || retailerId || 'self'
+
   useEffect(() => {
     let active = true
-    void loadCartDraft()
+    void loadCartDraft(currentUserId, currentRetailerContextId)
       .then((draft) => {
         if (active) setCart(draft)
       })
@@ -137,12 +214,15 @@ function CataloguePage() {
         if (active) setCartReady(true)
       })
 
-    return () => { active = false }
-  }, [])
+    return () => {
+      active = false
+      setCartReady(false)
+    }
+  }, [currentUserId, currentRetailerContextId])
 
   useEffect(() => {
-    if (cartReady) void saveCartDraft(cart).catch(() => undefined)
-  }, [cart, cartReady])
+    if (cartReady) void saveCartDraft(cart, currentUserId, currentRetailerContextId).catch(() => undefined)
+  }, [cart, cartReady, currentUserId, currentRetailerContextId])
 
   useEffect(() => {
     const handleOffline = () => {
@@ -181,16 +261,29 @@ function CataloguePage() {
       setLoading(true)
       setError(false)
 
+      const targetRetailerId = salesmanRetailerContext?.id || retailerId || null
+      const endpoint = salesmanRetailerContext?.id ? `/catalogue?retailer_id=${salesmanRetailerContext.id}` : '/catalogue'
+
       try {
-        const payload = await apiFetch<CatalogueResponse>('/catalogue', {
+        const payload = await apiFetch<CatalogueResponse>(endpoint, {
           signal: controller.signal,
         })
         setProducts(payload.items)
         setSource(payload.source)
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        setCachedSyncedAt(now)
+        void saveCachedCatalogue(currentUserId, role, targetRetailerId, payload.items)
       } catch (loadError) {
         if (!controller.signal.aborted) {
-          setError(true)
-          reportNetworkFailure(loadError)
+          const cached = await getCachedCatalogue(currentUserId, role, targetRetailerId)
+          if (cached && cached.items.length > 0) {
+            setProducts(cached.items)
+            setSource('database')
+            setCachedSyncedAt(new Date(cached.syncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+          } else {
+            setError(true)
+            reportNetworkFailure(loadError)
+          }
         }
       } finally {
         if (!controller.signal.aborted) setLoading(false)
@@ -199,7 +292,7 @@ function CataloguePage() {
 
     void loadCatalogue()
     return () => controller.abort()
-  }, [isOrderDesk, reloadKey])
+  }, [isOrderDesk, reloadKey, salesmanRetailerContext, currentUserId, role, retailerId])
 
   useEffect(() => {
     if (isOrderDesk) return
@@ -216,7 +309,10 @@ function CataloguePage() {
       try {
         const nextQuote = await apiFetch<CartQuote>('/cart/quote', {
           method: 'POST',
-          body: JSON.stringify({ items }),
+          body: JSON.stringify({
+            items,
+            retailer_id: salesmanRetailerContext?.id,
+          }),
           signal: controller.signal,
         })
         if (nextQuote.source !== source) {
@@ -238,7 +334,7 @@ function CataloguePage() {
 
     void loadQuote()
     return () => controller.abort()
-  }, [cart, isOnline, isOrderDesk, quoteReloadKey, source])
+  }, [cart, isOnline, isOrderDesk, quoteReloadKey, source, salesmanRetailerContext])
 
   const categories = [
     ...ORDERED_CATEGORIES,
@@ -298,15 +394,45 @@ function CataloguePage() {
   }
 
   async function submitCart() {
-    if (
-      !isOnline ||
-      !quote ||
-      quoteLoading ||
-      quoteError ||
-      quoteSourceMismatch ||
-      cartCount === 0 ||
-      orderSubmitting
-    ) return
+    if (cartCount === 0 || orderSubmitting) return
+
+    const orderItems = Object.entries(cart).map(([sku, quantity]) => ({ sku, quantity }))
+    const targetRetailerId = salesmanRetailerContext?.id || retailerId || 'self'
+    const targetRetailerName = salesmanRetailerContext?.name || user?.email || 'Retailer'
+    const idempotencyKey =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `order-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+
+    if (!isOnline) {
+      setOrderSubmitting(true)
+      await queueOutboxOrder({
+        idempotency_key: idempotencyKey,
+        userId: user?.id || 'current-user',
+        retailerId: targetRetailerId,
+        retailerName: targetRetailerName,
+        items: orderItems,
+        orderSource: salesmanRetailerContext ? 'salesman' : 'retailer',
+        salesmanId: salesmanRetailerContext ? (role === 'salesman' ? (profile?.salesman_id || user?.id || null) : null) : null,
+        status: 'waiting_connection',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })
+
+      if (recoveredFromKey) {
+        await supersedeOutboxOrder(recoveredFromKey)
+        setRecoveredFromKey(null)
+      }
+
+      setCart({})
+      setQuote(null)
+      setOrderSubmitting(false)
+      setMobileCartOpen(false)
+      setOutboxOpen(true)
+      return
+    }
+
+    if (!quote || quoteLoading || quoteError || quoteSourceMismatch) return
 
     setOrderSubmitting(true)
     setOrderSubmitError('')
@@ -314,9 +440,16 @@ function CataloguePage() {
       const order = await apiFetch<DemoOrder>('/orders', {
         method: 'POST',
         body: JSON.stringify({
-          items: Object.entries(cart).map(([sku, quantity]) => ({ sku, quantity })),
+          items: orderItems,
+          retailer_id: salesmanRetailerContext?.id,
+          idempotency_key: idempotencyKey,
+          order_source: salesmanRetailerContext ? 'salesman' : 'retailer',
         }),
       })
+      if (recoveredFromKey) {
+        await supersedeOutboxOrder(recoveredFromKey)
+        setRecoveredFromKey(null)
+      }
       setSubmittedOrder(order)
       setCart({})
       setQuote(null)
@@ -332,6 +465,25 @@ function CataloguePage() {
       )
     } finally {
       setOrderSubmitting(false)
+    }
+  }
+
+  function handleRepeatOrderDraft(draftResponse: any) {
+    if (draftResponse.has_unavailable_items) {
+      setReorderNotice({
+        message: draftResponse.message,
+        items: draftResponse.unavailable_items || [],
+      })
+    }
+    if (draftResponse.draft_quote && draftResponse.draft_quote.lines) {
+      const nextCart: Record<string, number> = {}
+      for (const line of draftResponse.draft_quote.lines) {
+        nextCart[line.sku] = line.requested_quantity
+      }
+      setCart(nextCart)
+      setQuote(draftResponse.draft_quote)
+      setActiveView('catalogue')
+      setMobileCartOpen(true)
     }
   }
 
@@ -398,6 +550,16 @@ function CataloguePage() {
           <span>{user?.email ?? (isOrderDesk ? 'Order Desk user' : 'Retailer account')}</span>
         </div>
 
+        {!isOrderDesk && retailerCredit && (
+          <div
+            className="topbar-credit-pill"
+            title={`Credit Limit: ${currency.format(Number(retailerCredit.credit_limit))}, Current Outstanding: ${currency.format(Number(retailerCredit.current_outstanding))}`}
+          >
+            <span className="credit-pill-label">Available Credit:</span>
+            <strong>{currency.format(Number(retailerCredit.effective_available_credit))}</strong>
+          </div>
+        )}
+
         <button
           className="topbar-logout-btn"
           type="button"
@@ -410,8 +572,47 @@ function CataloguePage() {
 
         <div className={isOnline ? 'connection-indicator online' : 'connection-indicator offline'} role="status" aria-live="polite">
           {isOnline ? <Cloud size={15} aria-hidden="true" /> : <CloudOff size={15} aria-hidden="true" />}
-          {isOnline ? 'Online' : 'Offline'}
+          {isOnline ? 'Online' : cachedSyncedAt ? `Offline · Cached ${cachedSyncedAt}` : 'Offline'}
         </div>
+
+        {!isOrderDesk && (
+          <button
+            type="button"
+            className="topbar-outbox-btn"
+            onClick={() => setOutboxOpen(true)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 12px',
+              background: '#f4f6f2',
+              border: '1px solid #e0e6df',
+              borderRadius: '6px',
+              fontSize: '13px',
+              fontWeight: 600,
+              color: '#1d2925',
+              cursor: 'pointer',
+            }}
+            title="Open offline sync queue"
+          >
+            <Cloud size={14} aria-hidden="true" />
+            <span>Outbox</span>
+            {pendingOutboxCount > 0 && (
+              <span
+                style={{
+                  background: '#c95d43',
+                  color: '#ffffff',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  padding: '1px 6px',
+                  borderRadius: '10px',
+                }}
+              >
+                {pendingOutboxCount}
+              </span>
+            )}
+          </button>
+        )}
 
         {!isOrderDesk && (
           <button
@@ -526,9 +727,24 @@ function CataloguePage() {
                       <div className="product-photo">
                         <img src={product.image_url} alt={product.name} loading="lazy" />
                         <span className="photo-category">{product.category}</span>
-                        <span className={`stock-indicator ${product.stock_quantity <= 0 ? 'out-of-stock' : ''}`}>
-                          <span /> {product.stock_quantity <= 0 ? 'Out of stock' : `${product.stock_quantity} cases`}
-                        </span>
+                        {(() => {
+                          const isOutOfStock = product.stock_quantity <= 0
+                          const isLowStock = !isOutOfStock && product.stock_quantity <= 10
+                          return (
+                            <span
+                              className={`stock-indicator ${
+                                isOutOfStock ? 'out-of-stock' : isLowStock ? 'low-stock' : ''
+                              }`}
+                            >
+                              <span />
+                              {isOutOfStock
+                                ? 'Out of stock'
+                                : isLowStock
+                                ? `Low stock · ${product.stock_quantity} cases`
+                                : `${product.stock_quantity} cases`}
+                            </span>
+                          )
+                        })()}
                       </div>
                       <div className="product-content">
                         <div className="product-topline">
@@ -612,29 +828,37 @@ function CataloguePage() {
               </div>
             ) : (
               <div className="cart-lines">
-                {cartProducts.map((product) => (
-                  <div className="cart-line" key={product.sku}>
-                    <div className="cart-line-copy">
-                      <strong>{product.name}</strong>
-                      <span>{currency.format(Number(product.unit_price))} / {product.order_unit}</span>
-                      {quoteLinesBySku.get(product.sku)?.free_quantity ? (
-                        <span className="cart-line-bonus">
-                          {quoteLinesBySku.get(product.sku)?.paid_quantity} paid +{' '}
-                          {quoteLinesBySku.get(product.sku)?.free_quantity} free
-                        </span>
-                      ) : null}
+                {cartProducts.map((product) => {
+                  const lineQuote = quoteLinesBySku.get(product.sku)
+                  return (
+                    <div className="cart-line" key={product.sku}>
+                      <div className="cart-line-copy">
+                        <strong>{product.name}</strong>
+                        <span>{currency.format(Number(product.unit_price))} / {product.order_unit}</span>
+                        {lineQuote?.free_quantity ? (
+                          <span className="cart-line-bonus">
+                            {lineQuote.paid_quantity} paid + {lineQuote.free_quantity} free
+                          </span>
+                        ) : null}
+                        {Number(lineQuote?.discount ?? 0) > 0 ? (
+                          <span className="cart-line-discount">
+                            {lineQuote?.scheme_label ? `${lineQuote.scheme_label}: ` : ''}
+                            −{currency.format(Number(lineQuote?.discount))}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="cart-line-controls">
+                        <button type="button" onClick={() => changeQuantity(product.sku, -1)} aria-label={`Remove one ${product.name}`}>
+                          <Minus size={13} aria-hidden="true" />
+                        </button>
+                        <span>{cart[product.sku]}</span>
+                        <button type="button" onClick={() => changeQuantity(product.sku, 1)} aria-label={`Add one ${product.name}`}>
+                          <Plus size={13} aria-hidden="true" />
+                        </button>
+                      </div>
                     </div>
-                    <div className="cart-line-controls">
-                      <button type="button" onClick={() => changeQuantity(product.sku, -1)} aria-label={`Remove one ${product.name}`}>
-                        <Minus size={13} aria-hidden="true" />
-                      </button>
-                      <span>{cart[product.sku]}</span>
-                      <button type="button" onClick={() => changeQuantity(product.sku, 1)} aria-label={`Add one ${product.name}`}>
-                        <Plus size={13} aria-hidden="true" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
 
@@ -687,22 +911,27 @@ function CataloguePage() {
                   Retry quote
                 </button>
               )}
+              {retailerCredit && quote && Number(quote.total) > Number(retailerCredit.effective_available_credit) && (
+                <div className="cart-credit-warning" role="alert">
+                  <ShieldAlert size={16} aria-hidden="true" />
+                  <span>
+                    Order total exceeds available credit ({currency.format(Number(retailerCredit.effective_available_credit))}). This order will be placed on <strong>Credit Hold</strong>.
+                  </span>
+                </div>
+              )}
               {orderSubmitError && <p className="order-submit-error" role="alert">{orderSubmitError}</p>}
               {cartCount > 0 && (
                 <button
                   className="submit-order-button"
                   type="button"
                   disabled={
-                    !isOnline ||
-                    !quote ||
-                    quoteLoading ||
-                    quoteError ||
-                    quoteSourceMismatch ||
-                    orderSubmitting
+                    orderSubmitting ||
+                    cartCount === 0 ||
+                    (isOnline && (!quote || quoteLoading || quoteError || quoteSourceMismatch))
                   }
                   onClick={submitCart}
                 >
-                  {orderSubmitting ? 'Submitting…' : 'Submit for review'}
+                  {orderSubmitting ? 'Submitting…' : !isOnline ? 'Queue order offline' : 'Submit for review'}
                   {!orderSubmitting && <ArrowRight size={15} aria-hidden="true" />}
                 </button>
               )}
@@ -719,14 +948,18 @@ function CataloguePage() {
             onAddToCart={addCaptureItems}
           />
         ) : currentView === 'order_desk' ? (
-          <OrderDesk onOpenOrder={(orderId) => {
-            setSelectedOrderId(orderId)
-            setActiveView('order_detail')
-          }} />
+          <OrderDesk
+            onOpenOrder={(orderId) => {
+              setSelectedOrderId(orderId)
+              setActiveView('order_detail')
+            }}
+            onRepeatOrder={handleRepeatOrderDraft}
+          />
         ) : currentView === 'order_detail' && selectedOrderId ? (
           <OrderDetail
             orderId={selectedOrderId}
             onBack={() => setActiveView('order_desk')}
+            onRepeatOrder={handleRepeatOrderDraft}
           />
         ) : currentView === 'order_confirmation' && submittedOrder ? (
           <OrderConfirmation
@@ -739,12 +972,82 @@ function CataloguePage() {
             onNewOrder={() => setActiveView('catalogue')}
           />
         ) : (
-          <OrderDesk onOpenOrder={(orderId) => {
-            setSelectedOrderId(orderId)
-            setActiveView('order_detail')
-          }} />
+          <OrderDesk
+            onOpenOrder={(orderId) => {
+              setSelectedOrderId(orderId)
+              setActiveView('order_detail')
+            }}
+            onRepeatOrder={handleRepeatOrderDraft}
+          />
         )}
       </main>
+
+      <OutboxDrawer
+        isOpen={outboxOpen}
+        onClose={() => setOutboxOpen(false)}
+        userId={user?.id}
+        onEditOrderInCart={async (outboxOrder) => {
+          await markOrderUnderReview(outboxOrder.idempotency_key)
+          setRecoveredFromKey(outboxOrder.idempotency_key)
+          const nextCart: Record<string, number> = {}
+          for (const item of outboxOrder.items) {
+            nextCart[item.sku] = item.quantity
+          }
+          setCart(nextCart)
+          setOutboxOpen(false)
+          setActiveView('catalogue')
+          setMobileCartOpen(true)
+        }}
+      />
+
+      {reorderNotice && (
+        <div className="repeat-warning-modal-overlay" onClick={() => setReorderNotice(null)}>
+          <div className="repeat-warning-modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#b45309', marginBottom: '12px' }}>
+              <AlertTriangle size={22} />
+              <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 600 }}>Reorder Item Notice</h3>
+            </div>
+            <p style={{ margin: '0 0 12px', fontSize: '13px', color: '#1d2925' }}>
+              {reorderNotice.message}
+            </p>
+            <div style={{ maxHeight: '180px', overflowY: 'auto', marginBottom: '16px' }}>
+              {reorderNotice.items.map((item) => (
+                <div
+                  key={item.sku}
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    background: '#fff0e9',
+                    border: '1px solid #f8c3b4',
+                    marginBottom: '6px',
+                    fontSize: '12px',
+                    color: '#c95d43',
+                  }}
+                >
+                  <strong>{item.name} ({item.sku})</strong>: {item.message}
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => setReorderNotice(null)}
+                style={{
+                  padding: '8px 16px',
+                  background: '#245c46',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Review available items in cart
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {currentView === 'catalogue' && !isOrderDesk && (
         <button className="mobile-cart-dock" type="button" onClick={() => setMobileCartOpen(true)}>

@@ -1,0 +1,377 @@
+.salesman-portal {
+  min-height: 100vh;
+  color: #1d2925;
+  background: #f4f6f2;
+}
+
+.salesman-topbar {
+  height: 70px;
+  padding: 0 clamp(16px, 4vw, 58px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e0e6df;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.salesman-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.salesman-brand-mark {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: #245c46;
+  color: #ffffff;
+  font: 700 19px/1 Georgia, serif;
+}
+
+.salesman-role-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #e6f0e9;
+  color: #245c46;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.salesman-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.salesman-outbox-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #f4f6f2;
+  border: 1px solid #e0e6df;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d2925;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.salesman-outbox-btn:hover {
+  background: #e6f0e9;
+  border-color: #245c46;
+}
+
+.salesman-outbox-badge {
+  background: #c95d43;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+}
+
+.salesman-signout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: none;
+  border: 1px solid #e0e6df;
+  border-radius: 8px;
+  color: #6f7a73;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.salesman-signout-btn:hover {
+  color: #c95d43;
+  border-color: #f8c3b4;
+}
+
+.salesman-body {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px clamp(16px, 4vw, 40px);
+}
+
+.salesman-hero {
+  margin-bottom: 24px;
+  background: #ffffff;
+  border: 1px solid #e0e6df;
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.salesman-hero-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.salesman-hero-header h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #1d2925;
+}
+
+.salesman-hero-header p {
+  margin: 0;
+  color: #6f7a73;
+  font-size: 14px;
+}
+
+.salesman-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f4f6f2;
+  border: 1px solid #e0e6df;
+  border-radius: 8px;
+  padding: 8px 14px;
+  min-width: 280px;
+  max-width: 400px;
+}
+
+.salesman-search-bar input {
+  background: none;
+  border: none;
+  outline: none;
+  width: 100%;
+  font-size: 14px;
+  color: #1d2925;
+}
+
+.retailers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 20px;
+}
+
+.retailer-card {
+  background: #ffffff;
+  border: 1px solid #e0e6df;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.retailer-card:hover {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
+}
+
+.retailer-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.retailer-card-header h3 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  font-weight: 600;
+  color: #1d2925;
+}
+
+.retailer-ref-badge {
+  font-size: 11px;
+  font-weight: 700;
+  background: #e6f0e9;
+  color: #245c46;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.retailer-card-contact {
+  font-size: 13px;
+  color: #6f7a73;
+  margin-bottom: 16px;
+  line-height: 1.4;
+}
+
+.retailer-credit-widget {
+  background: #f4f6f2;
+  border: 1px solid #e0e6df;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  flex: 1;
+}
+
+.credit-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.credit-row span {
+  color: #6f7a73;
+}
+
+.credit-row strong {
+  color: #1d2925;
+}
+
+.credit-progress-track {
+  height: 6px;
+  background: #e0e6df;
+  border-radius: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.credit-progress-bar {
+  height: 100%;
+  background: #245c46;
+  transition: width 0.3s ease;
+}
+
+.credit-progress-bar.high {
+  background: #c95d43;
+}
+
+.retailer-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.order-for-retailer-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: #245c46;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.order-for-retailer-btn:hover {
+  background: #194533;
+}
+
+.note-for-retailer-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px;
+  background: #f4f6f2;
+  border: 1px solid #e0e6df;
+  border-radius: 8px;
+  color: #1d2925;
+  cursor: pointer;
+}
+
+.note-for-retailer-btn:hover {
+  background: #e0e6df;
+}
+
+/* Modal for Visit Notes */
+.note-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(29, 41, 37, 0.4);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.note-modal {
+  width: 100%;
+  max-width: 520px;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+}
+
+.note-modal h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  color: #1d2925;
+}
+
+.note-modal p {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: #6f7a73;
+}
+
+.note-modal textarea {
+  width: 100%;
+  min-height: 100px;
+  border: 1px solid #e0e6df;
+  border-radius: 8px;
+  padding: 12px;
+  font-family: inherit;
+  font-size: 14px;
+  box-sizing: border-box;
+  margin-bottom: 16px;
+  outline: none;
+}
+
+.note-modal textarea:focus {
+  border-color: #245c46;
+}
+
+.note-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.note-history-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border-top: 1px solid #e0e6df;
+  padding-top: 12px;
+  margin-top: 16px;
+}
+
+.note-history-item {
+  padding: 8px 10px;
+  background: #f4f6f2;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.note-history-meta {
+  font-size: 11px;
+  color: #6f7a73;
+  margin-top: 4px;
+}
+

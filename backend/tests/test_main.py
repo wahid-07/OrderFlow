@@ -81,6 +81,8 @@ def test_cart_quote_rejects_unknown_sku(
 
 def test_demo_capture_matches_example_and_requires_human_review(
     monkeypatch,
+    seeded_database,
+    authenticated_retailer,
 ) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     response = client.post(
@@ -114,6 +116,8 @@ def test_demo_capture_matches_example_and_requires_human_review(
 
 def test_demo_capture_asks_about_missing_unit_instead_of_guessing(
     monkeypatch,
+    seeded_database,
+    authenticated_retailer,
 ) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     response = client.post(
@@ -133,6 +137,7 @@ def test_demo_capture_asks_about_missing_unit_instead_of_guessing(
 
 def test_gemini_capture_requires_authentication_and_filters_unknown_skus(
     monkeypatch,
+    seeded_database,
 ) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "configured-server-side")
     unauthenticated = client.post(
@@ -141,37 +146,46 @@ def test_gemini_capture_requires_authentication_and_filters_unknown_skus(
     )
     assert unauthenticated.status_code == 401
 
-    monkeypatch.setattr(ai_capture, "_authorize_gemini_request", lambda _: None)
-    monkeypatch.setattr(
-        ai_capture,
-        "_generate_with_gemini",
-        lambda _: ai_capture.GeminiOrderResult(
-            lines=[
-                ai_capture.GeminiOrderLine(
-                    line_index=0,
-                    quantity=Decimal("5"),
-                    candidates=[
-                        ai_capture.GeminiCandidate(sku="invented-sku", confidence=0.99),
-                        ai_capture.GeminiCandidate(sku="SKU-BS-075", confidence=0.82),
-                    ],
-                )
-            ]
-        ),
-    )
-    authenticated = client.post(
-        "/ai/order-captures",
-        headers={"Authorization": "Bearer test-token"},
-        json={"raw_text": "5 peti biscuit"},
-    )
+    with Session(seeded_database) as session:
+        user = session.scalar(
+            select(User).where(User.auth_subject == "demo-retailer-user")
+        )
+        assert user is not None
+        session.expunge(user)
 
-    assert authenticated.status_code == 200
-    result = authenticated.json()
-    assert result["source"] == "gemini"
-    assert result["lines"][0]["matched_sku"] == "SKU-BS-075"
-    assert [candidate["sku"] for candidate in result["lines"][0]["candidates"]] == [
-        "SKU-BS-075"
-    ]
-    assert result["order_placed"] is False
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        monkeypatch.setattr(
+            ai_capture,
+            "_generate_with_gemini",
+            lambda *args, **kwargs: ai_capture.GeminiOrderResult(
+                lines=[
+                    ai_capture.GeminiOrderLine(
+                        line_index=0,
+                        quantity=Decimal("5"),
+                        candidates=[
+                            ai_capture.GeminiCandidate(sku="invented-sku", confidence=0.99),
+                            ai_capture.GeminiCandidate(sku="SKU-BS-075", confidence=0.82),
+                        ],
+                    )
+                ]
+            ),
+        )
+        authenticated = client.post(
+            "/ai/order-captures",
+            json={"raw_text": "5 peti biscuit"},
+        )
+
+        assert authenticated.status_code == 200
+        result = authenticated.json()
+        assert result["source"] == "gemini"
+        assert result["lines"][0]["matched_sku"] == "SKU-BS-075"
+        assert [candidate["sku"] for candidate in result["lines"][0]["candidates"]] == [
+            "SKU-BS-075"
+        ]
+        assert result["order_placed"] is False
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_auth_profile_uses_local_user_role() -> None:
@@ -185,7 +199,7 @@ def test_auth_profile_uses_local_user_role() -> None:
     try:
         response = client.get("/auth/me")
     finally:
-        app.dependency_overrides.clear()
+        app.dependency_overrides.pop(get_current_user, None)
 
     assert response.status_code == 200
     assert response.json() == {

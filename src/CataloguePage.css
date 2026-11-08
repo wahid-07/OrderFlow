@@ -142,6 +142,51 @@ button {
   background: #fff3e9;
 }
 
+/* Phase 4: Retailer Credit Status Indicator & Cart Warning */
+.topbar-credit-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid #cce2d2;
+  border-radius: 20px;
+  background: #f2f8f4;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.topbar-credit-pill .credit-pill-label {
+  color: #556c5c;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.topbar-credit-pill strong {
+  color: var(--forest);
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.cart-credit-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 10px 11px;
+  border: 1px solid #f6d29b;
+  border-radius: 5px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.cart-credit-warning svg {
+  flex: none;
+  color: #b45309;
+  margin-top: 1px;
+}
+
 .offline-banner {
   display: flex;
   align-items: flex-start;
@@ -485,6 +530,15 @@ button {
   background: #a9d879;
 }
 
+.stock-indicator.low-stock {
+  background: rgb(180 110 20 / 90%);
+  color: #fff;
+}
+
+.stock-indicator.low-stock > span {
+  background: #facc15;
+}
+
 .stock-indicator.out-of-stock {
   background: rgb(180 50 30 / 85%);
   color: #fff;
@@ -792,6 +846,12 @@ button {
 .cart-line-copy .cart-line-bonus {
   color: var(--forest);
   font-weight: 700;
+}
+
+.cart-line-copy .cart-line-discount {
+  color: #c95d43;
+  font-weight: 600;
+  font-size: 10px;
 }
 
 .cart-line-controls button {

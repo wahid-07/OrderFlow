@@ -16,8 +16,22 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db_session
-from app.models import Product, Retailer, RetailerPrice, Scheme, User
-from app.scheme_engine import BuyXGetYScheme, QuantityDiscountScheme, SchemeRule
+from app.models import (
+    Inventory,
+    Product,
+    Retailer,
+    RetailerPrice,
+    Salesman,
+    SalesmanRetailerAssignment,
+    Scheme,
+    User,
+)
+from app.scheme_engine import (
+    BuyXGetYScheme,
+    QuantityDiscountScheme,
+    SchemeRule,
+    SlabDiscountScheme,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -500,10 +514,12 @@ def get_active_schemes(session: Session) -> list[Scheme]:
     )
 
 
-def resolve_scheme_for_sku(
+def resolve_schemes_for_sku(
     sku: str,
     schemes: Iterable[Scheme],
-) -> tuple[str, SchemeRule] | None:
+) -> list[tuple[str, SchemeRule]]:
+    """Return all active, valid scheme rules configured for this SKU."""
+    resolved: list[tuple[str, SchemeRule]] = []
     for scheme in schemes:
         definition = scheme.definition or {}
         if "sku" in definition:
@@ -518,20 +534,42 @@ def resolve_scheme_for_sku(
         rule_fields = {key: value for key, value in definition.items() if key != "sku"}
         try:
             if scheme.scheme_type == "buy_x_get_y":
-                rule = BuyXGetYScheme(type="buy_x_get_y", **rule_fields)
+                rule = BuyXGetYScheme(type="buy_x_get_y", name=scheme.name, **rule_fields)
                 label = f"{rule.buy_quantity}+ cases → {rule.free_quantity} free"
             elif scheme.scheme_type == "quantity_discount":
-                rule = QuantityDiscountScheme(type="quantity_discount", **rule_fields)
+                rule = QuantityDiscountScheme(
+                    type="quantity_discount", name=scheme.name, **rule_fields
+                )
                 percent = format(rule.discount_percent.normalize(), "f")
                 label = f"{rule.minimum_quantity}+ cases → {percent}% off"
+            elif scheme.scheme_type == "slab_discount":
+                rule = SlabDiscountScheme(
+                    type="slab_discount", name=scheme.name, **rule_fields
+                )
+                first_tier = min(rule.tiers, key=lambda t: t.min_quantity)
+                max_percent = max(t.discount_percent for t in rule.tiers)
+                percent = format(max_percent.normalize(), "f")
+                label = f"{first_tier.min_quantity}+ cases → up to {percent}% off"
             else:
                 continue
+            resolved.append((label, rule))
         except (TypeError, ValidationError):
             logger.warning("Skipping invalid scheme definition %s", scheme.name)
             continue
 
-        return label, rule
-    return None
+    return resolved
+
+
+def resolve_scheme_for_sku(
+    sku: str,
+    schemes: Iterable[Scheme],
+) -> tuple[str, SchemeRule] | None:
+    """Return the primary scheme for catalogue display for this SKU."""
+    all_schemes = resolve_schemes_for_sku(sku, schemes)
+    if not all_schemes:
+        return None
+    # Pick highest priority, then first
+    return max(all_schemes, key=lambda item: getattr(item[1], "priority", 0))
 
 
 def active_price_conditions(now: datetime) -> tuple[object, object]:
@@ -553,7 +591,7 @@ class CatalogueItem(BaseModel):
     gst_status: str
     scheme_label: str | None
     image_url: str
-    scheme_rule: BuyXGetYScheme | QuantityDiscountScheme | None = Field(
+    scheme_rule: BuyXGetYScheme | QuantityDiscountScheme | SlabDiscountScheme | None = Field(
         default=None,
         exclude=True,
     )
@@ -635,11 +673,51 @@ def get_catalogue(
     session: Annotated[Session, Depends(get_db_session)],
     current_user: Annotated[
         User,
-        Depends(require_roles("retailer")),
+        Depends(
+            require_roles(
+                "retailer",
+                "salesman",
+            )
+        ),
     ],
+    retailer_id: UUID | None = None,
 ) -> CatalogueResponse:
+    target_retailer_id = current_user.retailer_id
 
-    if current_user.retailer_id is None:
+    if current_user.role == "salesman":
+        if not retailer_id:
+            raise HTTPException(
+                status_code=400,
+                detail="retailer_id query parameter is required when fetching catalogue as salesman",
+            )
+        salesman = session.scalar(
+            select(Salesman).where(
+                Salesman.user_id == current_user.id,
+                Salesman.is_active.is_(True),
+            )
+        )
+        if salesman is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Active salesman profile not found",
+            )
+        assignment = session.scalar(
+            select(SalesmanRetailerAssignment).where(
+                SalesmanRetailerAssignment.salesman_id == salesman.id,
+                SalesmanRetailerAssignment.retailer_id == retailer_id,
+                SalesmanRetailerAssignment.is_active.is_(True),
+            )
+        )
+        if assignment is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Salesman is not assigned to this retailer",
+            )
+        target_retailer_id = retailer_id
+    elif current_user.role in ("order_desk", "distributor_admin", "super_admin"):
+        target_retailer_id = retailer_id or current_user.retailer_id
+
+    if target_retailer_id is None:
         raise HTTPException(
             status_code=403,
             detail="User is not linked to a retailer",
@@ -647,13 +725,14 @@ def get_catalogue(
 
     retailer = get_catalogue_retailer(
         session,
-        current_user.retailer_id,
+        target_retailer_id,
     )
     now = datetime.now(timezone.utc)
 
     rows = session.execute(
-        select(Product, RetailerPrice)
+        select(Product, RetailerPrice, Inventory)
         .join(RetailerPrice, RetailerPrice.product_id == Product.id)
+        .outerjoin(Inventory, Inventory.product_id == Product.id)
         .where(
             Product.is_active.is_(True),
             RetailerPrice.retailer_id == retailer.id,
@@ -665,19 +744,24 @@ def get_catalogue(
             RetailerPrice.created_at.desc(),
         )
     ).all()
-    latest_rows: dict[str, tuple[Product, RetailerPrice]] = {}
-    for product, retailer_price in rows:
-        latest_rows.setdefault(product.sku, (product, retailer_price))
+    latest_rows: dict[str, tuple[Product, RetailerPrice, Inventory | None]] = {}
+    for product, retailer_price, inv in rows:
+        latest_rows.setdefault(product.sku, (product, retailer_price, inv))
     schemes = get_active_schemes(session)
 
     items: list[CatalogueItem] = []
-    for product, retailer_price in latest_rows.values():
+    for product, retailer_price, inv in latest_rows.values():
         presentation = PRODUCT_PRESENTATION.get(product.sku, {})
         scheme = resolve_scheme_for_sku(product.sku, schemes)
         gst_status = (
             f"{product.gst_rate.normalize()}% configured"
             if product.gst_rate is not None
             else "Rate not configured"
+        )
+        stock_qty = (
+            inv.available_stock
+            if inv is not None
+            else STOCK_BY_SKU.get(product.sku, 0)
         )
         items.append(
             CatalogueItem(
@@ -688,7 +772,7 @@ def get_catalogue(
                 pack_label=product.pack_label or "Pack not configured",
                 order_unit=presentation.get("order_unit", "case"),
                 unit_price=retailer_price.unit_price,
-                stock_quantity=STOCK_BY_SKU.get(product.sku, 0),
+                stock_quantity=stock_qty,
                 gst_status=gst_status,
                 scheme_label=scheme[0] if scheme else None,
                 image_url=presentation.get("image_url", ""),

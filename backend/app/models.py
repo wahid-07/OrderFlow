@@ -5,8 +5,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
+    Integer,
     JSON,
     Numeric,
     String,
@@ -39,7 +41,26 @@ class Retailer(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     external_ref: Mapped[str | None] = mapped_column(String(100), unique=True)
     phone: Mapped[str | None] = mapped_column(String(32))
+    contact_person: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    credit_limit: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), nullable=False
+    )
+    current_outstanding: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), nullable=False
+    )
+
+    @property
+    def available_credit(self) -> Decimal:
+        limit = self.credit_limit if self.credit_limit is not None else Decimal("0.00")
+        outstanding = (
+            self.current_outstanding
+            if self.current_outstanding is not None
+            else Decimal("0.00")
+        )
+        return limit - outstanding
 
 
 class User(TimestampMixin, Base):
@@ -62,6 +83,41 @@ class Salesman(TimestampMixin, Base):
         ForeignKey("users.id"), unique=True, nullable=False
     )
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(32))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class SalesmanRetailerAssignment(TimestampMixin, Base):
+    __tablename__ = "salesman_retailer_assignments"
+    __table_args__ = (
+        UniqueConstraint("salesman_id", "retailer_id", name="uq_salesman_retailer_assignment"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    salesman_id: Mapped[UUID] = mapped_column(
+        ForeignKey("salesmen.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    retailer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("retailers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    assigned_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class SalesmanVisitNote(TimestampMixin, Base):
+    __tablename__ = "salesman_visit_notes"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    salesman_id: Mapped[UUID] = mapped_column(
+        ForeignKey("salesmen.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    retailer_id: Mapped[UUID] = mapped_column(
+        ForeignKey("retailers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    note: Mapped[str] = mapped_column(String(1000), nullable=False)
+    created_by_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id"), nullable=False
+    )
 
 
 class Product(TimestampMixin, Base):
@@ -114,6 +170,15 @@ class Order(TimestampMixin, Base):
     created_by_user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id"), nullable=False
     )
+    salesman_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("salesmen.id"), nullable=True
+    )
+    order_source: Mapped[str] = mapped_column(
+        String(32), default="retailer", nullable=False
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(100), unique=True, nullable=True, index=True
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
 
     subtotal: Mapped[Decimal] = mapped_column(
@@ -133,6 +198,7 @@ class Order(TimestampMixin, Base):
     )
 
     note: Mapped[str | None] = mapped_column(String(500))
+    hold_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -195,8 +261,8 @@ class SkuAlias(TimestampMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    retailer_id: Mapped[UUID] = mapped_column(
-        ForeignKey("retailers.id"), nullable=False
+    retailer_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("retailers.id"), nullable=True
     )
     product_id: Mapped[UUID] = mapped_column(ForeignKey("products.id"), nullable=False)
     alias: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -205,3 +271,55 @@ class SkuAlias(TimestampMixin, Base):
     )
     confirmed_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Inventory(TimestampMixin, Base):
+    __tablename__ = "inventory"
+    __table_args__ = (
+        CheckConstraint("reserved_stock >= 0", name="ck_inventory_reserved_non_negative"),
+        CheckConstraint("on_hand_stock >= 0", name="ck_inventory_on_hand_non_negative"),
+        CheckConstraint("reserved_stock <= on_hand_stock", name="ck_inventory_reserved_le_on_hand"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    product_id: Mapped[UUID] = mapped_column(
+        ForeignKey("products.id"), unique=True, nullable=False, index=True
+    )
+    on_hand_stock: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    reserved_stock: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    low_stock_threshold: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    @property
+    def available_stock(self) -> int:
+        return max(0, self.on_hand_stock - self.reserved_stock)
+
+    @property
+    def is_low_stock(self) -> bool:
+        return self.available_stock <= self.low_stock_threshold
+
+
+class StockMovement(TimestampMixin, Base):
+    __tablename__ = "stock_movements"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    product_id: Mapped[UUID] = mapped_column(
+        ForeignKey("products.id"), nullable=False, index=True
+    )
+    movement_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Types: "receive", "adjustment", "reserve", "release_reservation", "deduct_approved"
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    on_hand_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    on_hand_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    reference_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )

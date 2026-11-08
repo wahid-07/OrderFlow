@@ -1,11 +1,16 @@
+import { useState } from 'react'
 import { AuthProvider } from './context/AuthProvider'
 import { useAuth } from './context/useAuth'
 import { LoginPage } from './components/LoginPage'
+import { RegisterPage } from './components/RegisterPage'
+import { CompleteProfilePage } from './components/CompleteProfilePage'
 import CataloguePage from './CataloguePage'
+import { SalesmanPortal } from './SalesmanPortal'
 import { AlertCircle, LoaderCircle, LogOut } from 'lucide-react'
 
 function AppContent() {
-  const { isAuthenticated, loading, profileError, logout, profile } = useAuth()
+  const { isAuthenticated, loading, profileError, logout, profile, isUnlinkedProfile } = useAuth()
+  const [authView, setAuthView] = useState<'login' | 'register'>('login')
 
   if (loading) {
     return (
@@ -27,6 +32,10 @@ function AppContent() {
     )
   }
 
+  if (isUnlinkedProfile) {
+    return <CompleteProfilePage />
+  }
+
   if (!isAuthenticated) {
     return (
       <>
@@ -34,7 +43,7 @@ function AppContent() {
           <div
             role="alert"
             style={{
-              maxWidth: '440px',
+              maxWidth: authView === 'register' ? '580px' : '440px',
               margin: '24px auto 0',
               padding: '12px 16px',
               background: '#fff0e9',
@@ -51,12 +60,16 @@ function AppContent() {
             <span>{profileError}</span>
           </div>
         )}
-        <LoginPage />
+        {authView === 'login' ? (
+          <LoginPage onNavigateToRegister={() => setAuthView('register')} />
+        ) : (
+          <RegisterPage onNavigateToLogin={() => setAuthView('login')} />
+        )}
       </>
     )
   }
 
-  if (profile && !['retailer', 'order_desk'].includes(profile.role)) {
+  if (profile && !['retailer', 'order_desk', 'salesman'].includes(profile.role)) {
     return (
       <div
         style={{
@@ -92,6 +105,10 @@ function AppContent() {
         </button>
       </div>
     )
+  }
+
+  if (profile?.role === 'salesman') {
+    return <SalesmanPortal />
   }
 
   return <CataloguePage />
